@@ -700,6 +700,22 @@ dialog::backdrop {
     min-height: 100vh
 }
 
+@keyframes dashboard-enter {
+    from {
+        opacity: 0;
+        transform: translateY(6px)
+    }
+
+    to {
+        opacity: 1;
+        transform: translateY(0)
+    }
+}
+
+#app.dashboard-enter {
+    animation: dashboard-enter .24s ease-out both
+}
+
 .lp {
     flex: 0 0 55%;
     background: #000;

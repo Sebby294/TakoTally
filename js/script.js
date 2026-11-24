@@ -461,18 +461,16 @@ purge();
 })();
 let U, tab = 'in',
     flash = '',
-    tm, rsel = 'Staff';
-const FL = {},
-    enc = x => new TextEncoder().encode(x),
-    hx = b => [...new Uint8Array(b)].map(x => x.toString(16).padStart(2, '0')).join(''),
-    rnd = () => hx(crypto.getRandomValues(new Uint8Array(16))),
-    hp = async (p, s) => hx(await crypto.subtle.deriveBits({
-        name: 'PBKDF2',
-        hash: 'SHA-256',
-        salt: enc(s),
-        iterations: 15e4
-    }, await crypto.subtle.importKey('raw', enc(p), 'PBKDF2', 0, ['deriveBits']), 256));
-const rsl = () => `<label>Role<select id="ro">${['Staff','Production Head','Owner'].map(r=>`<option ${rsel==r?'selected':''}>${r}</option>`).join('')}</select></label>`;
+    tm;
+const authUser = user => {
+    const meta = user.user_metadata || {},
+        role = user.app_metadata && user.app_metadata.role;
+    return {
+        n: [meta.first_name, meta.middle_name, meta.surname].filter(Boolean).join(' ') || user.email,
+        e: user.email,
+        r: ['Staff', 'Production Head', 'Owner'].includes(role) ? role : 'Staff'
+    }
+};
 const live = () => S.tx.filter(t => !t.x),
     th = k => S.thr[k] ?? I[k].h,
     brs = () => [...new Set([...S.br, ...live().filter(t => t.t == 'out').map(t => t.p).filter(b => b && !WS.includes(b))])];
@@ -540,32 +538,22 @@ function login() {
     $('#app').innerHTML = `<div class="lg"><section class="lp">${logo('min(300px,60%)')}<h2>Every supply, counted.</h2><p>Stock-in, stock-out, and branch supply in one place.</p></section><section class="rp"><div class="top">${tbtn}</div><div class="lc"><div class="card"><div class="brand">${logo('48px')}<span><b>TakoTally</b><small>Legendary Takoyaki · Production office</small></span></div>
 <h1 style="font-size:26px">Log in or create account</h1><i class="ul"></i>
 <div class="tabs"><button type="button" class="btn ${tab=='in'?'blk':'out'}" data-tab="in">${ic('user')}Log in</button><button type="button" class="btn ${tab=='up'?'blk':'out'}" data-tab="up">${ic('plus')}Create account</button></div><div id="m">${flash?`<div class="okb">${ic('check')}<span>${flash}</span></div>`:''}</div>
-${tab=='in'?`<form id="f" novalidate><div class="ur"><label>Email<input id="em" type="email" autocomplete="email" placeholder="name@email.com"></label>${rsl()}</div>${pw('p','Password')}<button class="btn red" style="width:100%;justify-content:center">Log in</button></form>`:`<h2 style="font-size:20px;margin-bottom:10px">Create account</h2><form id="f" novalidate><div class="ur"><label>Surname<input id="sn" autocomplete="family-name"></label><label>First name<input id="fn" autocomplete="given-name"></label></div><label>Middle name (optional)<input id="mn" autocomplete="additional-name"></label><label>Email<input id="em" type="email" autocomplete="email" placeholder="e.g. name@email.com"></label><div class="ur"><label>Username<input id="u" autocomplete="username"></label>${rsl()}</div>${pw('p','Password')}${pw('c','Confirm password')}<button class="btn red" style="width:100%;justify-content:center">Create account</button></form>`}</div></div>${cpy}</section></div>`;
+${tab=='in'?`<form id="f" novalidate><label>Email<input id="em" type="email" autocomplete="email" placeholder="name@email.com"></label>${pw('p','Password')}<button class="btn red" style="width:100%;justify-content:center">Log in</button></form>`:`<h2 style="font-size:20px;margin-bottom:10px">Create account</h2><form id="f" novalidate><div class="ur"><label>Surname<input id="sn" autocomplete="family-name"></label><label>First name<input id="fn" autocomplete="given-name"></label></div><label>Middle name (optional)<input id="mn" autocomplete="additional-name"></label><label>Email<input id="em" type="email" autocomplete="email" placeholder="e.g. name@email.com"></label><label>Username<input id="u" autocomplete="username"></label><p class="sub">New accounts start as Staff.</p>${pw('p','Password')}${pw('c','Confirm password')}<button class="btn red" style="width:100%;justify-content:center">Create account</button></form>`}</div></div>${cpy}</section></div>`;
     flash = '';
     $('#f').onsubmit = async e => {
         e.preventDefault();
         let m = $('#m'),
             em = $('#em').value.trim().toLowerCase(),
             p = $('#p').value;
-        if (!crypto.subtle) return er(m, 'This browser cannot log in safely here. Open the page over https.');
+        if (!window.takoSupabase) return er(m, 'Supabase is not ready. Check the project URL, publishable key, and internet connection.');
         if (tab == 'in') {
             if (!em || !p) return er(m, 'Enter your email and password.');
-            let a = S.us.find(x => x.e == em),
-                k = FL[em] || (FL[em] = {
-                    n: 0,
-                    t: 0
-                });
-            if (Date.now() < k.t) return er(m, 'Too many tries. Wait 30 seconds and try again.');
-            if (!a || await hp(p, a.s) != a.h) {
-                if (++k.n >= 5) {
-                    k.n = 0;
-                    k.t = Date.now() + 3e4
-                }
-                return er(m, 'Wrong email or password. If this is your first time, create an account first.')
-            }
-            k.n = 0;
-            if (a.r != rsel) return er(m, `This email is not registered as ${rsel}. Choose the role you signed up with. If you have not signed up yet, create an account first.`);
-            L.tts = a.e;
+            const { data, error } = await window.takoSupabase.auth.signInWithPassword({
+                email: em,
+                password: p
+            });
+            if (error) return er(m, E(error.message));
+            U = authUser(data.user);
             location.hash = '#dash';
             R()
         } else {
@@ -577,24 +565,29 @@ ${tab=='in'?`<form id="f" novalidate><div class="ur"><label>Email<input id="em" 
             if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(em)) return er(m, 'Enter a valid email address.');
             if (/\s/.test(u)) return er(m, 'Username cannot contain spaces.');
             if (p != $('#c').value) return er(m, 'The passwords do not match.');
-            if (S.us.some(x => x.u.toLowerCase() == u.toLowerCase())) return er(m, 'That username is already taken. Choose another one.');
-            if (S.us.some(x => x.e == em)) return er(m, 'That email already has an account. Log in instead.');
-            let sl = rnd();
-            S.us.push({
-                n: fn + (mn ? ' ' + mn : '') + ' ' + sn,
-                sn,
-                fn,
-                mn,
-                e: em,
-                u,
-                r: rsel,
-                s: sl,
-                h: await hp(p, sl)
+            const { data, error } = await window.takoSupabase.auth.signUp({
+                email: em,
+                password: p,
+                options: {
+                    emailRedirectTo: window.location.origin + window.location.pathname,
+                    data: {
+                        first_name: fn,
+                        middle_name: mn,
+                        surname: sn,
+                        username: u
+                    }
+                }
             });
-            save();
-            tab = 'in';
-            flash = 'Account created. Log in with your email and password.';
-            login()
+            if (error) return er(m, E(error.message));
+            if (data.session && data.user) {
+                U = authUser(data.user);
+                location.hash = '#dash';
+                R()
+            } else {
+                tab = 'in';
+                flash = 'Account created. Check your email to confirm the account, then log in.';
+                login()
+            }
         }
     };
     setT(L.tth || (matchMedia('(prefers-color-scheme:dark)').matches ? 'dark' : 'light'))
@@ -1308,8 +1301,9 @@ function cmp() {
 }
 /* ROUTER + EVENTS */
 function R() {
-    U = S.us.find(x => x.e == L.tts);
     if (!U) return login();
+    const app = $('#app'),
+        wasLogin = !!app.querySelector('.lg');
     let h = (location.hash || '#dash').slice(1);
     if (!['dash', 'in', 'out', 'rep', 'cmp'].includes(h)) h = 'dash';
     shell(h);
@@ -1322,15 +1316,55 @@ function R() {
         rep,
         cmp
     })[h]();
+    if (wasLogin && !matchMedia('(prefers-reduced-motion: reduce)').matches) {
+        const clearLoginAnimation = e => {
+            if (e.target != app || e.animationName != 'dashboard-enter') return;
+            app.classList.remove('dashboard-enter');
+            app.removeEventListener('animationend', clearLoginAnimation)
+        };
+        app.classList.add('dashboard-enter');
+        app.addEventListener('animationend', clearLoginAnimation)
+    }
     net();
     window.scrollTo(0, 0)
+}
+async function logout(message) {
+    const { error } = await window.takoSupabase.auth.signOut();
+    if (error) {
+        const notice = document.createElement('div');
+        notice.className = 'er';
+        notice.textContent = `Could not log out: ${error.message}`;
+        $('#app').prepend(notice);
+        return
+    }
+    U = null;
+    flash = message;
+    location.hash = '';
+    R()
+}
+async function startAuth() {
+    if (!window.takoSupabase) {
+        flash = 'Supabase is not ready. Check the project URL, publishable key, and internet connection.';
+        return R()
+    }
+    window.takoSupabase.auth.onAuthStateChange((_event, session) => {
+        U = session && session.user ? authUser(session.user) : null;
+        R()
+    });
+    const { data, error } = await window.takoSupabase.auth.getSession();
+    if (error) {
+        console.error('Could not restore the Supabase session:', error.message);
+        flash = 'Could not check your sign-in session. Refresh the page and try again.';
+    }
+    U = data && data.session && data.session.user ? authUser(data.session.user) : null;
+    R()
 }
 addEventListener('hashchange', () => {
     if (U) R()
 });
 addEventListener('online', net);
 addEventListener('offline', net);
-document.addEventListener('click', e => {
+document.addEventListener('click', async e => {
     let b = e.target.closest('[data-a],[data-tab],[data-q],.eye');
     if (!b) return;
     if (b.classList.contains('eye')) {
@@ -1349,10 +1383,7 @@ document.addEventListener('click', e => {
     let a = b.dataset.a;
     if (a == 'th') setT(document.documentElement.dataset.theme == 'dark' ? 'light' : 'dark');
     if (a == 'lo') {
-        delete L.tts;
-        flash = 'You have been logged out.';
-        location.hash = '';
-        R()
+        await logout('You have been logged out.');
     }
     if (a == 'mb') $('#sd').classList.toggle('open');
     if (a == 'prn') print();
@@ -1363,12 +1394,6 @@ document.addEventListener('click', e => {
         document.title = o;
         $('#sv').innerHTML = `<div class="okb">${ic('check')}<span>Report saved as PDF: TakoTally-Inventory-Report-${T}.pdf</span></div>`
     }
-});
-document.addEventListener('change', e => {
-    if (e.target.id != 'ro') return;
-    rsel = e.target.value;
-    let c = $('#cw');
-    if (c) c.hidden = rsel == 'Staff'
 });
 document.addEventListener('keydown', e => {
     if (e.key == 'Escape') {
@@ -1384,11 +1409,8 @@ document.documentElement.dataset.theme = L.tth || (matchMedia('(prefers-color-sc
 let idle = Date.now();
 ['click', 'keydown'].forEach(v => addEventListener(v, () => idle = Date.now()));
 setInterval(() => {
-    if (L.tts && Date.now() - idle > 18e5) {
-        delete L.tts;
-        flash = 'You were logged out after 30 minutes of no activity.';
-        location.hash = '';
-        R()
+    if (U && Date.now() - idle > 18e5) {
+        logout('You were logged out after 30 minutes of no activity.')
     }
 }, 3e4);
-R();
+startAuth();
