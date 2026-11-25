@@ -716,6 +716,22 @@ dialog::backdrop {
     animation: dashboard-enter .24s ease-out both
 }
 
+@keyframes login-enter {
+    from {
+        opacity: 0;
+        transform: translateY(10px)
+    }
+
+    to {
+        opacity: 1;
+        transform: translateY(0)
+    }
+}
+
+#app.login-enter {
+    animation: login-enter .3s ease-out both
+}
+
 .lp {
     flex: 0 0 55%;
     background: #000;

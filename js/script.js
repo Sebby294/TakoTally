@@ -466,6 +466,7 @@ const authUser = user => {
     const meta = user.user_metadata || {},
         role = user.app_metadata && user.app_metadata.role;
     return {
+        id: user.id,
         n: [meta.first_name, meta.middle_name, meta.surname].filter(Boolean).join(' ') || user.email,
         e: user.email,
         r: ['Staff', 'Production Head', 'Owner'].includes(role) ? role : 'Staff'
@@ -599,13 +600,253 @@ function shell(h) {
             ['in', 'Stock-in', 'in'],
             ['out', 'Stock-out', 'out'],
             ['rep', 'Reports', 'bar'],
-            ['cmp', 'Branch comparison', 'store']
+            ['cmp', 'Branch comparison', 'store'],
+            ['transfer', 'Ownership transfer', 'user']
         ],
         lk = U.r == 'Staff';
+    if (U.r == 'Owner') nv.push(['users', 'Manage accounts', 'user']);
     $('#app').innerHTML = `<div class="wrap"><aside class="side" id="sd"><div class="brand">${logo('44px')}<span><b>TakoTally</b><small>Legendary Takoyaki · Production office</small></span></div>${nv.map(([k,l,i])=>{let x=lk&&(k=='rep'||k=='cmp');return`<a class="nav ${h==k?'on':''}" href="#${k}">${ic(x?'lock':i)}${l}${x?'<span class="tag">Locked</span>':''}</a>`}).join('')}
 <div class="sf"><span>Signed in as ${E(U.n)}</span><span>Role: ${U.r}</span><span class="pill op" id="op"></span><button type="button" class="btn out sm" style="color:#fff;border-color:#fff" data-a="lo">${ic('logout',16)}Log out</button></div></aside>
 <div class="main"><header class="top"><button type="button" class="btn out sm mb" data-a="mb">${ic('menu',16)}Menu</button>${tbtn}</header><div class="ban" id="ob" hidden style="margin:12px 32px 0">${ic('warn')}<span>No internet connection. TakoTally needs the internet to save and show stock. Reconnect and try again.</span></div><main id="pg"></main>${cpy}</div></div>`;
     setT(document.documentElement.dataset.theme)
+}
+/* ACCOUNT ROLE MANAGEMENT */
+function users() {
+    const pg = $('#pg');
+    pg.innerHTML = hd('Manage accounts', 'Assign Staff or Production Head access to registered users.') + `<div class="card"><p class="sub">Only existing accounts appear here; this does not create or invite accounts. Owner accounts and your own account cannot be changed here. Owner role changes are reserved for the ownership-transfer process.</p><div id="um"></div><div class="row"><button type="button" class="btn out" id="ur">Refresh accounts</button></div><div class="tw dt"><table><thead><tr><th>Name</th><th>Email</th><th>Role</th><th></th></tr></thead><tbody id="ut"><tr><td colspan="4">Loading accounts…</td></tr></tbody></table></div></div>`;
+    const um = $('#um'),
+        ut = $('#ut'),
+        refresh = $('#ur');
+
+    async function roleErrorMessage(error) {
+        const response = error && error.context;
+        if (response && typeof response.clone == 'function') {
+            try {
+                const body = await response.clone().json();
+                if (body && typeof body.error == 'string') return body.error;
+            } catch {
+                return error.message || 'Account management request failed.';
+            }
+        }
+        return error.message || 'Account management request failed.'
+    }
+
+    async function load() {
+        refresh.disabled = true;
+        um.innerHTML = '';
+        ut.innerHTML = '<tr><td colspan="4">Loading accounts…</td></tr>';
+        const { data, error } = await window.takoSupabase.functions.invoke('manage-user-roles', {
+            body: {
+                action: 'list'
+            }
+        });
+        refresh.disabled = false;
+        if (error) {
+            ut.innerHTML = '';
+            return er(um, 'Could not load accounts: ' + E(await roleErrorMessage(error)));
+        }
+        if (!data || !Array.isArray(data.users)) {
+            ut.innerHTML = '';
+            return er(um, 'The account service returned an unexpected response. Try refreshing.');
+        }
+        if (!data.users.length) {
+            ut.innerHTML = '<tr><td colspan="4">No accounts found.</td></tr>';
+            return
+        }
+        ut.innerHTML = data.users.map(account => {
+            const email = account.email || 'No email',
+                role = ['Staff', 'Production Head', 'Owner'].includes(account.role) ? account.role : 'Staff',
+                protectedAccount = account.isCurrentUser || role == 'Owner';
+            return `<tr><td>${E(account.name || email)}${account.isCurrentUser ? ' (you)' : ''}</td><td>${E(email)}</td><td>${protectedAccount ? `<span class="pill ${role=='Owner'?'in':'op'}">${E(role)}</span>` : `<select data-role-select aria-label="Role for ${E(email)}" data-original-role="${E(role)}"><option value="Staff" ${role=='Staff'?'selected':''}>Staff</option><option value="Production Head" ${role=='Production Head'?'selected':''}>Production Head</option></select>`}</td><td>${protectedAccount ? '<span class="sub">Protected</span>' : `<button type="button" class="btn blk sm" data-role-save="${E(account.id)}" data-email="${E(email)}" disabled>Save role</button>`}</td></tr>`
+        }).join('');
+        ut.onchange = e => {
+            const select = e.target.closest('[data-role-select]');
+            if (!select) return;
+            const button = select.closest('tr').querySelector('[data-role-save]');
+            button.disabled = select.value == select.dataset.originalRole || off();
+        };
+        ut.onclick = async e => {
+            const button = e.target.closest('[data-role-save]');
+            if (!button || button.disabled) return;
+            if (off()) return er(um, 'Reconnect to the internet before changing a role.');
+            const row = button.closest('tr'),
+                select = row.querySelector('[data-role-select]'),
+                role = select.value,
+                email = button.dataset.email;
+            if (role == select.dataset.originalRole) return;
+            if (!confirm(`Change ${email}'s role to ${role}?`)) {
+                select.value = select.dataset.originalRole;
+                button.disabled = true;
+                return
+            }
+            button.disabled = true;
+            button.textContent = 'Saving…';
+            um.innerHTML = '';
+            const { data: result, error: saveError } = await window.takoSupabase.functions.invoke('manage-user-roles', {
+                body: {
+                    action: 'set-role',
+                    userId: button.dataset.roleSave,
+                    role
+                }
+            });
+            button.textContent = 'Save role';
+            if (saveError) {
+                button.disabled = false;
+                return er(um, 'Could not update this role: ' + E(await roleErrorMessage(saveError)));
+            }
+            if (!result || result.role != role) {
+                button.disabled = false;
+                return er(um, 'The account service did not confirm the role change. Refresh the list and check the account.');
+            }
+            select.dataset.originalRole = role;
+            button.disabled = true;
+            um.innerHTML = `<div class="okb" role="status">${ic('check')}<span>${E(email)} is now ${E(role)}. They must sign out and back in for the new role to take effect.</span></div>`
+        }
+    }
+
+    refresh.onclick = load;
+    load()
+}
+/* OWNERSHIP TRANSFER */
+function ownershipTransfer() {
+    const pg = $('#pg');
+    pg.innerHTML = hd('Ownership transfer', 'Transfer the Owner role to another registered account.') +
+        `<div id="tr-status"><div class="card">Loading ownership transfer status…</div></div>`;
+    const status = $('#tr-status');
+
+    async function requestErrorMessage(error) {
+        const response = error && error.context;
+        if (response && typeof response.clone == 'function') {
+            try {
+                const body = await response.clone().json();
+                if (body && typeof body.error == 'string') return body.error;
+            } catch {
+                return error.message || 'Ownership transfer request failed.';
+            }
+        }
+        return error.message || 'Ownership transfer request failed.'
+    }
+
+    async function invoke(action, fields = {}) {
+        return await window.takoSupabase.functions.invoke('manage-user-roles', {
+            body: { action, ...fields }
+        })
+    }
+
+    async function load() {
+        status.innerHTML = '<div class="card">Loading ownership transfer status…</div>';
+        const { data, error } = await invoke('transfer-state');
+        if (error) return er(status, 'Could not load ownership transfer status: ' + E(await requestErrorMessage(error)));
+        if (!data || typeof data.isOwner != 'boolean' || typeof data.activeTransfer != 'boolean') {
+            return er(status, 'The account service returned an unexpected response. Refresh and try again.');
+        }
+
+        if (data.activeTransfer && !data.transfer) {
+            status.innerHTML = `<div class="card"><h2>Another transfer is in progress</h2><p class="sub">Only one ownership transfer can be active at a time. Refresh this page after it has been resolved.</p><button type="button" class="btn out" id="tr-refresh">Refresh status</button></div>`;
+            $('#tr-refresh').onclick = load;
+            return
+        }
+
+        if (data.transfer) {
+            const transfer = data.transfer,
+                name = E(transfer.otherUser?.name || transfer.otherUser?.email || 'the other account'),
+                email = transfer.otherUser?.email ? ` (${E(transfer.otherUser.email)})` : '',
+                pending = transfer.status == 'pending',
+                recipientActions = transfer.isRecipient && pending,
+                retry = transfer.isRecipient && transfer.status == 'processing';
+            let description = '';
+            if (transfer.status == 'pending' && transfer.isInitiator) {
+                description = `${name}${email} must sign in and accept this request. You can cancel it while it is pending.`;
+            } else if (recipientActions) {
+                description = `${name}${email} wants to transfer ownership to you. Accepting promotes you to Owner and changes the previous Owner to Production Head.`;
+            } else if (retry) {
+                description = 'This transfer is processing. Retry to safely finish or confirm the role changes. If an earlier attempt only partly completed, the previous Owner remains an Owner until you retry.';
+            } else if (transfer.status == 'processing') {
+                description = 'The recipient accepted this transfer and it is processing. If it does not finish, ask the recipient to sign in and retry from their account.';
+            } else {
+                description = 'This ownership transfer is active.';
+            }
+            const actions = recipientActions
+                ? `<button type="button" class="btn red" id="tr-accept">Accept transfer</button><button type="button" class="btn out" id="tr-reject">Decline</button>`
+                : retry
+                    ? `<button type="button" class="btn red" id="tr-accept">Retry transfer</button>`
+                    : transfer.isInitiator && pending
+                        ? `<button type="button" class="btn out" id="tr-cancel">Cancel request</button>`
+                        : '';
+            status.innerHTML = `<div class="card"><h2>${transfer.status == 'pending' ? 'Ownership transfer requested' : 'Ownership transfer processing'}</h2><p>${description}</p><p class="sub">Status: ${E(transfer.status)}</p><div class="row">${actions}<button type="button" class="btn out" id="tr-refresh">Refresh status</button></div><div id="tr-message" aria-live="polite"></div></div>`;
+            const message = $('#tr-message');
+            $('#tr-refresh').onclick = load;
+
+            async function resolve(action, button, confirmation) {
+                if (off()) return er(message, 'Reconnect to the internet before responding to this request.');
+                if (confirmation && !confirm(confirmation)) return;
+                const buttons = $$('#tr-accept,#tr-reject,#tr-cancel');
+                buttons.forEach(item => item.disabled = true);
+                button.textContent = action == 'accept-transfer' ? 'Processing…' : 'Saving…';
+                message.innerHTML = '';
+                const { data: result, error: actionError } = await invoke(action, { transferId: transfer.id });
+                if (actionError) {
+                    buttons.forEach(item => item.disabled = false);
+                    button.textContent = action == 'accept-transfer' ? (retry ? 'Retry transfer' : 'Accept transfer') : action == 'reject-transfer' ? 'Decline' : 'Cancel request';
+                    return er(message, E(await requestErrorMessage(actionError)));
+                }
+                if (action == 'accept-transfer' && result?.status == 'completed') {
+                    status.innerHTML = `<div class="card"><div class="okb" role="status">${ic('check')}<span>Ownership transfer completed. Sign out and back in to refresh your role and permissions. The former Owner is now Production Head.</span></div><button type="button" class="btn out" id="tr-refresh">Refresh status</button></div>`;
+                    $('#tr-refresh').onclick = load;
+                    return
+                }
+                await load()
+            }
+
+            const accept = $('#tr-accept'),
+                reject = $('#tr-reject'),
+                cancel = $('#tr-cancel');
+            if (accept) accept.onclick = () => resolve('accept-transfer', accept, retry ? 'Retry the ownership handoff now?' : 'Accept ownership? You will become the Owner, and the previous Owner will become Production Head.');
+            if (reject) reject.onclick = () => resolve('reject-transfer', reject, 'Decline this ownership transfer?');
+            if (cancel) cancel.onclick = () => resolve('cancel-transfer', cancel, 'Cancel this ownership transfer request?');
+            return
+        }
+
+        const recent = data.recentTransfer,
+            recentText = recent
+                ? `<p class="sub">Most recent request: ${E(recent.status)}${recent.created_at ? ` · ${E(new Date(recent.created_at).toLocaleString())}` : ''}</p>`
+                : '';
+        if (!data.isOwner) {
+            status.innerHTML = `<div class="card"><p>No ownership transfer is waiting for your response.</p>${recentText}<button type="button" class="btn out" id="tr-refresh">Refresh status</button></div>`;
+            $('#tr-refresh').onclick = load;
+            return
+        }
+
+        const candidates = Array.isArray(data.candidates) ? data.candidates : [];
+        status.innerHTML = `<div class="card"><p>Choose an existing Staff or Production Head account. The selected person must accept before ownership changes. When accepted, they become Owner and you become Production Head. Only one transfer can be pending or processing at a time.</p>${recentText}<label for="tr-user">Account to receive ownership<select id="tr-user"><option value="">Choose an account</option>${candidates.map(account => `<option value="${E(account.id)}">${E(account.name || account.email || 'Unnamed account')}${account.email ? ` (${E(account.email)})` : ''} — ${E(account.role)}</option>`).join('')}</select></label><div class="row"><button type="button" class="btn red" id="tr-start" ${candidates.length ? '' : 'disabled'}>Request ownership transfer</button><button type="button" class="btn out" id="tr-refresh">Refresh status</button></div><div id="tr-message" aria-live="polite"></div></div>`;
+        const start = $('#tr-start'),
+            select = $('#tr-user'),
+            message = $('#tr-message');
+        $('#tr-refresh').onclick = load;
+        start.onclick = async () => {
+            const recipient = candidates.find(account => account.id == select.value);
+            if (!recipient) return er(message, 'Choose an existing account first.');
+            if (off()) return er(message, 'Reconnect to the internet before starting a transfer.');
+            if (!confirm(`Request to transfer ownership to ${recipient.name || recipient.email}? They must accept before the transfer takes effect.`)) return;
+            start.disabled = true;
+            start.textContent = 'Sending request…';
+            message.innerHTML = '';
+            const { data: result, error: startError } = await invoke('start-transfer', { userId: recipient.id });
+            if (startError) {
+                start.disabled = false;
+                start.textContent = 'Request ownership transfer';
+                return er(message, E(await requestErrorMessage(startError)));
+            }
+            if (!result?.transfer?.id) {
+                start.disabled = false;
+                start.textContent = 'Request ownership transfer';
+                return er(message, 'The account service did not confirm the transfer request. Refresh and check its status.');
+            }
+            await load()
+        }
+    }
+
+    load()
 }
 /* DASHBOARD */
 function dash() {
@@ -1301,20 +1542,38 @@ function cmp() {
 }
 /* ROUTER + EVENTS */
 function R() {
-    if (!U) return login();
+    if (!U) {
+        const app = $('#app'),
+            wasShell = !!app.querySelector('.wrap');
+        login();
+        if (wasShell && !matchMedia('(prefers-reduced-motion: reduce)').matches) {
+            const clearLoginAnimation = e => {
+                if (e.target != app || e.animationName != 'login-enter') return;
+                app.classList.remove('login-enter');
+                app.removeEventListener('animationend', clearLoginAnimation)
+            };
+            app.classList.add('login-enter');
+            app.addEventListener('animationend', clearLoginAnimation)
+        }
+        return
+    }
     const app = $('#app'),
         wasLogin = !!app.querySelector('.lg');
     let h = (location.hash || '#dash').slice(1);
-    if (!['dash', 'in', 'out', 'rep', 'cmp'].includes(h)) h = 'dash';
+    if (!['dash', 'in', 'out', 'rep', 'cmp', 'users', 'transfer'].includes(h)) h = 'dash';
     shell(h);
-    if ((h == 'rep' || h == 'cmp') && U.r == 'Staff') {
+    if (h == 'users' && U.r != 'Owner') {
+        $('#pg').innerHTML = `<div class="card" style="max-width:560px;margin-top:24px">${ic('lock',28)}${hd('Access denied','')}<p>This page is only available to the Owner.</p><a class="btn red" href="#dash">Back to dashboard</a></div>`
+    } else if ((h == 'rep' || h == 'cmp') && U.r == 'Staff') {
         $('#pg').innerHTML = `<div class="card" style="max-width:560px;margin-top:24px">${ic('lock',28)}${hd('Access denied','')}<p>Oops, this page is just for the Production Head and Owner. Let's get you back to the dashboard.</p><a class="btn red" href="#dash">Back to dashboard</a></div>`
     } else({
         dash,
         in: () => entry('in'),
         out: () => entry('out'),
         rep,
-        cmp
+        cmp,
+        users,
+        transfer: ownershipTransfer
     })[h]();
     if (wasLogin && !matchMedia('(prefers-reduced-motion: reduce)').matches) {
         const clearLoginAnimation = e => {
@@ -1327,6 +1586,19 @@ function R() {
     }
     net();
     window.scrollTo(0, 0)
+}
+function confirmLogout() {
+    if (!U) return;
+    const dialog = $('#dlg'),
+        email = U.e && U.e != U.n ? ` (${E(U.e)})` : '';
+    dialog.innerHTML = `<div class="dg"><h2 style="margin:0 0 8px">Log out?</h2><p>You're signed in as <b>${E(U.n)}</b>${email}. Are you sure you want to log out?</p><div class="row"><button type="button" class="btn out" id="cancelLogout">Cancel</button><button type="button" class="btn red" id="confirmLogout">${ic('logout',16)}Log out</button></div></div>`;
+    dialog.showModal();
+    $('#cancelLogout').focus();
+    $('#cancelLogout').onclick = () => dialog.close();
+    $('#confirmLogout').onclick = async () => {
+        dialog.close();
+        await logout('You have been logged out.')
+    }
 }
 async function logout(message) {
     const { error } = await window.takoSupabase.auth.signOut();
@@ -1382,9 +1654,7 @@ document.addEventListener('click', async e => {
 
     let a = b.dataset.a;
     if (a == 'th') setT(document.documentElement.dataset.theme == 'dark' ? 'light' : 'dark');
-    if (a == 'lo') {
-        await logout('You have been logged out.');
-    }
+    if (a == 'lo') confirmLogout();
     if (a == 'mb') $('#sd').classList.toggle('open');
     if (a == 'prn') print();
     if (a == 'pdf') {

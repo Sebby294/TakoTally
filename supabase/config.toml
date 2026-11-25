@@ -1,0 +1,4 @@
+project_id = "takotally"
+
+[functions.manage-user-roles]
+verify_jwt = true
