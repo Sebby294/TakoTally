@@ -19,10 +19,12 @@ type AccountSummary = {
   name: string;
   role: Role;
   isCurrentUser: boolean;
+  isDeactivated: boolean;
 };
 type AuthUserRecord = {
   id: string;
   email?: string;
+  banned_until?: string | null;
   app_metadata?: Record<string, unknown>;
   user_metadata?: Record<string, unknown>;
 };
@@ -35,13 +37,19 @@ const roleOf = (user: AuthUserRecord): Role => {
     : "Staff";
 };
 
+const isDeactivated = (user: AuthUserRecord) =>
+  Boolean(user.banned_until && Date.parse(user.banned_until) > Date.now());
+
 const accountSummary = (user: AuthUserRecord, currentUserId: string): AccountSummary => {
   const metadata = user.user_metadata || {};
-  const name = [
-    metadata.first_name,
-    metadata.middle_name,
-    metadata.surname,
-  ].filter((part): part is string => typeof part === "string" && part.trim().length > 0).join(" ");
+  const displayName = metadata.display_name;
+  const name = typeof displayName === "string" && displayName.trim()
+    ? displayName.trim()
+    : [
+        metadata.first_name,
+        metadata.middle_name,
+        metadata.surname,
+      ].filter((part): part is string => typeof part === "string" && part.trim().length > 0).join(" ");
 
   return {
     id: user.id,
@@ -49,6 +57,7 @@ const accountSummary = (user: AuthUserRecord, currentUserId: string): AccountSum
     name: name || user.email || "Unnamed account",
     role: roleOf(user),
     isCurrentUser: user.id === currentUserId,
+    isDeactivated: isDeactivated(user),
   };
 };
 
@@ -199,7 +208,7 @@ Deno.serve(async (request) => {
       const result = await listAccounts(adminClient, caller.id);
       if (result.error) return json({ error: result.error }, 500);
       candidates = (result.accounts || []).filter(
-        (account) => !account.isCurrentUser && account.role !== "Owner",
+        (account) => !account.isCurrentUser && account.role !== "Owner" && !account.isDeactivated,
       );
     }
     return json({
@@ -239,6 +248,9 @@ Deno.serve(async (request) => {
     if (target.app_metadata?.role === "Owner") {
       return json({ error: "Owner roles can only be changed through ownership transfer." }, 403);
     }
+    if (isDeactivated(target)) {
+      return json({ error: "Reactivate this account before changing its role." }, 409);
+    }
 
     const { data: { user: updated }, error: updateError } =
       await setAppRole(adminClient, target, body.role);
@@ -247,6 +259,63 @@ Deno.serve(async (request) => {
       return json({ error: "Could not update this account's role." }, 500);
     }
     return json({ userId: updated.id, role: roleOf(updated) });
+  }
+
+  if (body.action === "deactivate-user" || body.action === "reactivate-user") {
+    if (!isOwner) return json({ error: "Only an Owner can change account access." }, 403);
+    if (typeof body.userId !== "string" || !body.userId || body.userId.length > 100) {
+      return json({ error: "A valid account ID is required." }, 400);
+    }
+    if (body.userId === caller.id) {
+      return json({ error: "You cannot deactivate or reactivate your own account here." }, 403);
+    }
+
+    const { data: { user: target }, error: targetError } =
+      await adminClient.auth.admin.getUserById(body.userId);
+    if (targetError || !target) {
+      return json({ error: "The selected account could not be found." }, 404);
+    }
+    if (target.app_metadata?.role !== "Staff" && target.app_metadata?.role !== "Production Head") {
+      return json({ error: "Only Staff and Production Head accounts can be deactivated or reactivated here." }, 403);
+    }
+
+    const shouldDeactivate = body.action === "deactivate-user";
+    if (shouldDeactivate && isDeactivated(target)) {
+      return json({ error: "This account is already deactivated. Refresh the account list." }, 409);
+    }
+    if (!shouldDeactivate && !isDeactivated(target)) {
+      return json({ error: "This account is already active. Refresh the account list." }, 409);
+    }
+
+    if (shouldDeactivate) {
+      const { data: activeTransfer, error: transferError } = await adminClient
+        .from("owner_transfers")
+        .select("id")
+        .eq("to_user_id", target.id)
+        .in("status", ["pending", "processing"])
+        .maybeSingle();
+      if (transferError) {
+        console.error("Could not check active ownership transfers:", transferError.message);
+        return json({ error: "Could not verify whether this account is part of an active ownership transfer." }, 500);
+      }
+      if (activeTransfer) {
+        return json({ error: "Resolve this account's active ownership transfer before deactivating it." }, 409);
+      }
+    }
+
+    const { data: { user: updated }, error: updateError } =
+      await adminClient.auth.admin.updateUserById(target.id, {
+        ban_duration: shouldDeactivate ? "876000h" : "none",
+      });
+    if (updateError || !updated) {
+      console.error("Could not change account access:", updateError?.message);
+      return json({ error: "Could not change this account's access." }, 500);
+    }
+
+    return json({
+      userId: updated.id,
+      isDeactivated: isDeactivated(updated),
+    });
   }
 
   if (body.action === "start-transfer") {
@@ -265,6 +334,9 @@ Deno.serve(async (request) => {
     }
     if (target.app_metadata?.role !== "Staff" && target.app_metadata?.role !== "Production Head") {
       return json({ error: "Choose an existing Staff or Production Head account." }, 400);
+    }
+    if (isDeactivated(target)) {
+      return json({ error: "Reactivate this account before requesting an ownership transfer." }, 409);
     }
 
     const { data: transfer, error: insertError } = await adminClient
@@ -367,6 +439,9 @@ Deno.serve(async (request) => {
         successorError: successorError?.message,
       });
       return json({ error: "Could not load the accounts involved. The transfer remains recoverable." }, 500);
+    }
+    if (isDeactivated(successor)) {
+      return json({ error: "The recipient's account is deactivated. Ask an Owner to reactivate it before retrying." }, 409);
     }
 
     const previousRole = previousOwner.app_metadata?.role;

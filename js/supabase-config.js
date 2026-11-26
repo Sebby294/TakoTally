@@ -1,4 +1,7 @@
 // Replace these placeholders with your project's URL and publishable key.
+window.takoEmailVerificationRedirect =
+    new URLSearchParams(window.location.search).get('verified') === '1';
+
 const SUPABASE_URL = 'https://zkgobragnhhuwegqdfwg.supabase.co';
 const SUPABASE_PUBLISHABLE_KEY = 'sb_publishable_EqIV-lhVnjCNwu4n5lHqXw_pXY2Xs1s';
 

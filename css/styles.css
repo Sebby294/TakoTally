@@ -148,6 +148,73 @@ h2 {
     transition: .15s
 }
 
+button.nav {
+    width: 100%;
+    text-align: left;
+    background: transparent;
+    cursor: pointer;
+    font-family: inherit;
+    font-size: inherit;
+    font-weight: 500;
+    border: 0;
+    border-left: 4px solid transparent
+}
+
+.nav-submenu {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding-left: 16px
+}
+
+.nav-submenu[hidden] {
+    display: none
+}
+
+@keyframes account-menu-expand {
+    from {
+        opacity: 0;
+        transform: translateY(-4px) scaleY(.96)
+    }
+
+    to {
+        opacity: 1;
+        transform: translateY(0) scaleY(1)
+    }
+}
+
+@keyframes account-menu-collapse {
+    from {
+        opacity: 1;
+        transform: translateY(0) scaleY(1)
+    }
+
+    to {
+        opacity: 0;
+        transform: translateY(-4px) scaleY(.96)
+    }
+}
+
+.nav-submenu.account-menu-opening {
+    transform-origin: top;
+    animation: account-menu-expand .16s ease-out both
+}
+
+.nav-submenu.account-menu-closing {
+    transform-origin: top;
+    animation: account-menu-collapse .14s ease-in both
+}
+
+.nav-submenu .nav {
+    font-size: 14px;
+    padding: 8px 10px
+}
+
+.account-menu-mark {
+    margin-left: auto;
+    font-size: 18px
+}
+
 .nav:hover {
     background: #262626
 }
@@ -606,6 +673,23 @@ dialog::backdrop {
 
 .dg {
     padding: 24px
+}
+
+.logout-confirm {
+    animation: logout-confirm-in .2s ease-out both;
+    transform-origin: center
+}
+
+@keyframes logout-confirm-in {
+    from {
+        opacity: 0;
+        transform: translateY(8px) scale(.98)
+    }
+
+    to {
+        opacity: 1;
+        transform: translateY(0) scale(1)
+    }
 }
 
 .dg .ic {
